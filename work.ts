@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
-import { existsSync, writeFileSync, mkdirSync } from "fs";
-import { join, resolve } from "path";
 import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { join, resolve } from "path";
 
 // Types
 interface LogEntry {
@@ -53,7 +53,7 @@ function getDb(): Database {
   const workDir = getWorkDir();
   const dbPath = join(workDir, "work.db");
   const db = new Database(dbPath);
-  
+
   // Initialize schema if needed
   db.run(`
     CREATE TABLE IF NOT EXISTS work (
@@ -72,7 +72,7 @@ function getDb(): Database {
       assignee TEXT
     )
   `);
-  
+
   return db;
 }
 
@@ -97,15 +97,19 @@ function rowToWorkItem(row: any): WorkItem {
 function exportToJsonl(db: Database): void {
   const workDir = getWorkDir();
   const jsonlPath = join(workDir, "work.jsonl");
-  
-  const rows = db.query("SELECT * FROM work ORDER BY CAST(id AS INTEGER)").all();
+
+  const rows = db
+    .query("SELECT * FROM work ORDER BY CAST(id AS INTEGER)")
+    .all();
   const items = rows.map(rowToWorkItem);
   const content = items.map((i) => JSON.stringify(i)).join("\n");
   writeFileSync(jsonlPath, content ? content + "\n" : "");
 }
 
 function nextId(db: Database): string {
-  const row = db.query("SELECT MAX(CAST(id AS INTEGER)) as maxId FROM work").get() as any;
+  const row = db
+    .query("SELECT MAX(CAST(id AS INTEGER)) as maxId FROM work")
+    .get() as any;
   const maxId = row?.maxId || 0;
   return String(maxId + 1).padStart(3, "0");
 }
@@ -119,7 +123,7 @@ function formatWork(item: WorkItem, verbose = false): string {
     item.status === "closed" ? "✓" : item.status === "in_progress" ? "▶" : "○";
   const priorityStr = `P${item.priority}`;
   const line = `${statusIcon} ${item.id} [${priorityStr}] ${item.title}`;
-  
+
   if (verbose && item.description) {
     return `${line}\n   ${item.description}`;
   }
@@ -139,7 +143,7 @@ const commands: Record<string, (args: string[]) => void> = {
       return;
     }
     mkdirSync(workDir, { recursive: true });
-    
+
     // Create empty DB
     const db = new Database(join(workDir, "work.db"));
     db.run(`
@@ -159,7 +163,7 @@ const commands: Record<string, (args: string[]) => void> = {
       )
     `);
     db.close();
-    
+
     // Create empty JSONL
     writeFileSync(join(workDir, "work.jsonl"), "");
     console.log("Initialized .work directory");
@@ -167,24 +171,36 @@ const commands: Record<string, (args: string[]) => void> = {
 
   add: (args) => {
     const typeFlag = args.find((a) => a.startsWith("--type="))?.split("=")[1];
-    const priorityFlag = args.find((a) => a.startsWith("--priority="))?.split("=")[1];
+    const priorityFlag = args
+      .find((a) => a.startsWith("--priority="))
+      ?.split("=")[1];
     const titleParts = args.filter((a) => !a.startsWith("--"));
     const title = titleParts.join(" ");
-    
+
     if (!title) {
-      console.error("Usage: work add <title> [--type=task|bug|feature] [--priority=0-4]");
+      console.error(
+        "Usage: work add <title> [--type=task|bug|feature] [--priority=0-4]",
+      );
       process.exit(1);
     }
 
     const db = getDb();
     const id = nextId(db);
     const timestamp = now();
-    
+
     db.run(
       `INSERT INTO work (id, title, status, priority, type, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, title, "open", priorityFlag ? parseInt(priorityFlag) : 2, typeFlag || "task", timestamp, timestamp]
+      [
+        id,
+        title,
+        "open",
+        priorityFlag ? Number.parseInt(priorityFlag) : 2,
+        typeFlag || "task",
+        timestamp,
+        timestamp,
+      ],
     );
-    
+
     exportToJsonl(db);
     db.close();
     console.log(`Created ${id}: ${title}`);
@@ -192,28 +208,32 @@ const commands: Record<string, (args: string[]) => void> = {
 
   list: (args) => {
     const db = getDb();
-    const statusFilter = args.find((a) => a.startsWith("--status="))?.split("=")[1];
-    const labelFilter = args.find((a) => a.startsWith("--label="))?.split("=")[1];
-    
+    const statusFilter = args
+      .find((a) => a.startsWith("--status="))
+      ?.split("=")[1];
+    const labelFilter = args
+      .find((a) => a.startsWith("--label="))
+      ?.split("=")[1];
+
     let query = "SELECT * FROM work";
-    let conditions: string[] = [];
-    let params: string[] = [];
-    
+    const conditions: string[] = [];
+    const params: string[] = [];
+
     if (statusFilter) {
       conditions.push("status = ?");
       params.push(statusFilter);
     } else {
       conditions.push("status != 'closed'");
     }
-    
+
     if (conditions.length) {
       query += " WHERE " + conditions.join(" AND ");
     }
     query += " ORDER BY priority, CAST(id AS INTEGER)";
-    
+
     let rows = db.query(query).all(...params);
     db.close();
-    
+
     // Filter by label in JS (JSON field)
     if (labelFilter) {
       rows = rows.filter((row: any) => {
@@ -222,7 +242,7 @@ const commands: Record<string, (args: string[]) => void> = {
         return labels.includes(labelFilter);
       });
     }
-    
+
     if (rows.length === 0) {
       console.log("No work items found");
       return;
@@ -233,28 +253,30 @@ const commands: Record<string, (args: string[]) => void> = {
 
   show: (args) => {
     const jsonFlag = args.includes("--json");
-    const id = args.find(a => !a.startsWith("--"));
+    const id = args.find((a) => !a.startsWith("--"));
     if (!id) {
       console.error("Usage: work show <id> [--json]");
       process.exit(1);
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     db.close();
-    
+
     if (!row) {
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
     const item = rowToWorkItem(row);
-    
+
     if (jsonFlag) {
       console.log(JSON.stringify(item));
       return;
     }
-    
+
     console.log(`ID:       ${item.id}`);
     console.log(`Title:    ${item.title}`);
     console.log(`Status:   ${item.status}`);
@@ -263,7 +285,8 @@ const commands: Record<string, (args: string[]) => void> = {
     console.log(`Created:  ${item.created}`);
     console.log(`Updated:  ${item.updated}`);
     if (item.description) console.log(`\n${item.description}`);
-    if (item.blocked_by?.length) console.log(`Blocked by: ${item.blocked_by.join(", ")}`);
+    if (item.blocked_by?.length)
+      console.log(`Blocked by: ${item.blocked_by.join(", ")}`);
     if (item.labels?.length) console.log(`Labels: ${item.labels.join(", ")}`);
     if (item.assignee) console.log(`Assignee: ${item.assignee}`);
     if (item.closed_reason) console.log(`Closed: ${item.closed_reason}`);
@@ -285,14 +308,20 @@ const commands: Record<string, (args: string[]) => void> = {
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    db.run("UPDATE work SET status = ?, updated = ? WHERE id = ?", ["in_progress", now(), padId(id)]);
+    db.run("UPDATE work SET status = ?, updated = ? WHERE id = ?", [
+      "in_progress",
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`Started ${padId(id)}: ${row.title}`);
@@ -306,7 +335,9 @@ const commands: Record<string, (args: string[]) => void> = {
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
@@ -314,8 +345,10 @@ const commands: Record<string, (args: string[]) => void> = {
     }
 
     const reason = args.length > 1 ? args.slice(1).join(" ") : null;
-    db.run("UPDATE work SET status = ?, updated = ?, closed_reason = ? WHERE id = ?", 
-      ["closed", now(), reason, padId(id)]);
+    db.run(
+      "UPDATE work SET status = ?, updated = ?, closed_reason = ? WHERE id = ?",
+      ["closed", now(), reason, padId(id)],
+    );
     exportToJsonl(db);
     db.close();
     console.log(`Closed ${padId(id)}: ${row.title}`);
@@ -329,15 +362,19 @@ const commands: Record<string, (args: string[]) => void> = {
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    db.run("UPDATE work SET status = ?, updated = ?, closed_reason = NULL WHERE id = ?", 
-      ["open", now(), padId(id)]);
+    db.run(
+      "UPDATE work SET status = ?, updated = ?, closed_reason = NULL WHERE id = ?",
+      ["open", now(), padId(id)],
+    );
     exportToJsonl(db);
     db.close();
     console.log(`Reopened ${padId(id)}: ${row.title}`);
@@ -355,7 +392,9 @@ const commands: Record<string, (args: string[]) => void> = {
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
@@ -372,9 +411,12 @@ const commands: Record<string, (args: string[]) => void> = {
 
     const existingLog = row.log ? JSON.parse(row.log) : [];
     existingLog.push(entry);
-    
-    db.run("UPDATE work SET log = ?, updated = ? WHERE id = ?", 
-      [JSON.stringify(existingLog), now(), padId(id)]);
+
+    db.run("UPDATE work SET log = ?, updated = ? WHERE id = ?", [
+      JSON.stringify(existingLog),
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`Logged to ${padId(id)}`);
@@ -383,7 +425,7 @@ const commands: Record<string, (args: string[]) => void> = {
   block: (args) => {
     const id = args[0];
     const blockerId = args[1];
-    
+
     if (!id || !blockerId) {
       console.error("Usage: work block <id> <blocker-id>");
       console.error("  Marks <id> as blocked by <blocker-id>");
@@ -391,32 +433,41 @@ const commands: Record<string, (args: string[]) => void> = {
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
-    
-    const blockerRow = db.query("SELECT * FROM work WHERE id = ?").get(padId(blockerId)) as any;
+
+    const blockerRow = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(blockerId)) as any;
     if (!blockerRow) {
       db.close();
       console.error(`Blocker work item ${blockerId} not found`);
       process.exit(1);
     }
 
-    const blockedBy: string[] = row.blocked_by ? JSON.parse(row.blocked_by) : [];
+    const blockedBy: string[] = row.blocked_by
+      ? JSON.parse(row.blocked_by)
+      : [];
     const paddedBlockerId = padId(blockerId);
-    
+
     if (blockedBy.includes(paddedBlockerId)) {
       db.close();
       console.log(`${padId(id)} is already blocked by ${paddedBlockerId}`);
       return;
     }
-    
+
     blockedBy.push(paddedBlockerId);
-    db.run("UPDATE work SET blocked_by = ?, updated = ? WHERE id = ?", 
-      [JSON.stringify(blockedBy), now(), padId(id)]);
+    db.run("UPDATE work SET blocked_by = ?, updated = ? WHERE id = ?", [
+      JSON.stringify(blockedBy),
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`${padId(id)} is now blocked by ${paddedBlockerId}`);
@@ -425,7 +476,7 @@ const commands: Record<string, (args: string[]) => void> = {
   unblock: (args) => {
     const id = args[0];
     const blockerId = args[1];
-    
+
     if (!id || !blockerId) {
       console.error("Usage: work unblock <id> <blocker-id>");
       console.error("  Removes <blocker-id> from blockers of <id>");
@@ -433,26 +484,33 @@ const commands: Record<string, (args: string[]) => void> = {
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    const blockedBy: string[] = row.blocked_by ? JSON.parse(row.blocked_by) : [];
+    const blockedBy: string[] = row.blocked_by
+      ? JSON.parse(row.blocked_by)
+      : [];
     const paddedBlockerId = padId(blockerId);
     const idx = blockedBy.indexOf(paddedBlockerId);
-    
+
     if (idx === -1) {
       db.close();
       console.log(`${padId(id)} is not blocked by ${paddedBlockerId}`);
       return;
     }
-    
+
     blockedBy.splice(idx, 1);
-    db.run("UPDATE work SET blocked_by = ?, updated = ? WHERE id = ?", 
-      [blockedBy.length ? JSON.stringify(blockedBy) : null, now(), padId(id)]);
+    db.run("UPDATE work SET blocked_by = ?, updated = ? WHERE id = ?", [
+      blockedBy.length ? JSON.stringify(blockedBy) : null,
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`Removed ${paddedBlockerId} from blockers of ${padId(id)}`);
@@ -460,24 +518,30 @@ const commands: Record<string, (args: string[]) => void> = {
 
   ready: (args) => {
     const db = getDb();
-    
+
     // Get all non-closed items
-    const rows = db.query("SELECT * FROM work WHERE status != 'closed' ORDER BY priority, CAST(id AS INTEGER)").all();
-    
+    const rows = db
+      .query(
+        "SELECT * FROM work WHERE status != 'closed' ORDER BY priority, CAST(id AS INTEGER)",
+      )
+      .all();
+
     // Get all closed item IDs for checking blockers
     const closedIds = new Set(
-      (db.query("SELECT id FROM work WHERE status = 'closed'").all() as any[]).map(r => r.id)
+      (
+        db.query("SELECT id FROM work WHERE status = 'closed'").all() as any[]
+      ).map((r) => r.id),
     );
-    
+
     db.close();
-    
+
     // Filter to items with no open blockers
-    const readyItems = rows.map(rowToWorkItem).filter(item => {
+    const readyItems = rows.map(rowToWorkItem).filter((item) => {
       if (!item.blocked_by?.length) return true;
       // Ready if all blockers are closed
-      return item.blocked_by.every(blockerId => closedIds.has(blockerId));
+      return item.blocked_by.every((blockerId) => closedIds.has(blockerId));
     });
-    
+
     if (readyItems.length === 0) {
       console.log("No ready work items");
       return;
@@ -489,24 +553,30 @@ const commands: Record<string, (args: string[]) => void> = {
 
   blocked: (args) => {
     const db = getDb();
-    
+
     // Get all non-closed items with blockers
-    const rows = db.query("SELECT * FROM work WHERE status != 'closed' AND blocked_by IS NOT NULL ORDER BY priority, CAST(id AS INTEGER)").all();
-    
+    const rows = db
+      .query(
+        "SELECT * FROM work WHERE status != 'closed' AND blocked_by IS NOT NULL ORDER BY priority, CAST(id AS INTEGER)",
+      )
+      .all();
+
     // Get all closed item IDs
     const closedIds = new Set(
-      (db.query("SELECT id FROM work WHERE status = 'closed'").all() as any[]).map(r => r.id)
+      (
+        db.query("SELECT id FROM work WHERE status = 'closed'").all() as any[]
+      ).map((r) => r.id),
     );
-    
+
     db.close();
-    
+
     // Filter to items with at least one open blocker
-    const blockedItems = rows.map(rowToWorkItem).filter(item => {
+    const blockedItems = rows.map(rowToWorkItem).filter((item) => {
       if (!item.blocked_by?.length) return false;
       // Blocked if any blocker is still open
-      return item.blocked_by.some(blockerId => !closedIds.has(blockerId));
+      return item.blocked_by.some((blockerId) => !closedIds.has(blockerId));
     });
-    
+
     if (blockedItems.length === 0) {
       console.log("No blocked work items");
       return;
@@ -514,8 +584,10 @@ const commands: Record<string, (args: string[]) => void> = {
 
     console.log("Blocked items:");
     blockedItems.forEach((item) => {
-      const openBlockers = item.blocked_by!.filter(id => !closedIds.has(id));
-      console.log(`${formatWork(item)} [blocked by: ${openBlockers.join(", ")}]`);
+      const openBlockers = item.blocked_by?.filter((id) => !closedIds.has(id));
+      console.log(
+        `${formatWork(item)} [blocked by: ${openBlockers.join(", ")}]`,
+      );
     });
   },
 
@@ -531,7 +603,9 @@ const commands: Record<string, (args: string[]) => void> = {
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
@@ -545,8 +619,12 @@ const commands: Record<string, (args: string[]) => void> = {
       process.exit(1);
     }
 
-    const sqlValue = field === "priority" ? parseInt(value, 10) : value;
-    db.run(`UPDATE work SET ${field} = ?, updated = ? WHERE id = ?`, [sqlValue, now(), padId(id)]);
+    const sqlValue = field === "priority" ? Number.parseInt(value, 10) : value;
+    db.run(`UPDATE work SET ${field} = ?, updated = ? WHERE id = ?`, [
+      sqlValue,
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`Updated ${padId(id)}`);
@@ -555,29 +633,31 @@ const commands: Record<string, (args: string[]) => void> = {
   import: () => {
     const workDir = getWorkDir();
     const jsonlPath = join(workDir, "work.jsonl");
-    
+
     if (!existsSync(jsonlPath)) {
       console.error("No work.jsonl file found");
       process.exit(1);
     }
-    
+
     const content = require("fs").readFileSync(jsonlPath, "utf-8").trim();
     if (!content) {
       console.log("No items to import");
       return;
     }
-    
-    const items: WorkItem[] = content.split("\n").map((line: string) => JSON.parse(line));
+
+    const items: WorkItem[] = content
+      .split("\n")
+      .map((line: string) => JSON.parse(line));
     const db = getDb();
-    
+
     // Clear existing data and insert from JSONL
     db.run("DELETE FROM work");
-    
+
     const stmt = db.prepare(`
       INSERT INTO work (id, title, status, priority, type, created, updated, description, blocked_by, labels, closed_reason, log, assignee)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    
+
     for (const item of items) {
       stmt.run(
         item.id,
@@ -592,10 +672,10 @@ const commands: Record<string, (args: string[]) => void> = {
         item.labels ? JSON.stringify(item.labels) : null,
         item.closed_reason || null,
         item.log ? JSON.stringify(item.log) : null,
-        item.assignee || null
+        item.assignee || null,
       );
     }
-    
+
     db.close();
     console.log(`Imported ${items.length} work items from JSONL`);
   },
@@ -610,21 +690,27 @@ const commands: Record<string, (args: string[]) => void> = {
   claim: (args) => {
     const id = args[0];
     const assignee = args[1];
-    
+
     if (!id || !assignee) {
       console.error("Usage: work claim <id> <assignee>");
       process.exit(1);
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    db.run("UPDATE work SET assignee = ?, updated = ? WHERE id = ?", [assignee, now(), padId(id)]);
+    db.run("UPDATE work SET assignee = ?, updated = ? WHERE id = ?", [
+      assignee,
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`${padId(id)} claimed by ${assignee}`);
@@ -632,21 +718,26 @@ const commands: Record<string, (args: string[]) => void> = {
 
   unclaim: (args) => {
     const id = args[0];
-    
+
     if (!id) {
       console.error("Usage: work unclaim <id>");
       process.exit(1);
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    db.run("UPDATE work SET assignee = NULL, updated = ? WHERE id = ?", [now(), padId(id)]);
+    db.run("UPDATE work SET assignee = NULL, updated = ? WHERE id = ?", [
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`${padId(id)} unclaimed`);
@@ -654,16 +745,20 @@ const commands: Record<string, (args: string[]) => void> = {
 
   mine: (args) => {
     const assignee = args[0];
-    
+
     if (!assignee) {
       console.error("Usage: work mine <assignee>");
       process.exit(1);
     }
 
     const db = getDb();
-    const rows = db.query("SELECT * FROM work WHERE assignee = ? AND status != 'closed' ORDER BY priority, CAST(id AS INTEGER)").all(assignee);
+    const rows = db
+      .query(
+        "SELECT * FROM work WHERE assignee = ? AND status != 'closed' ORDER BY priority, CAST(id AS INTEGER)",
+      )
+      .all(assignee);
     db.close();
-    
+
     if (rows.length === 0) {
       console.log(`No work items assigned to ${assignee}`);
       return;
@@ -676,14 +771,16 @@ const commands: Record<string, (args: string[]) => void> = {
   label: (args) => {
     const id = args[0];
     const labelName = args[1];
-    
+
     if (!id || !labelName) {
       console.error("Usage: work label <id> <label>");
       process.exit(1);
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
@@ -696,10 +793,13 @@ const commands: Record<string, (args: string[]) => void> = {
       console.log(`${padId(id)} already has label '${labelName}'`);
       return;
     }
-    
+
     labels.push(labelName);
-    db.run("UPDATE work SET labels = ?, updated = ? WHERE id = ?", 
-      [JSON.stringify(labels), now(), padId(id)]);
+    db.run("UPDATE work SET labels = ?, updated = ? WHERE id = ?", [
+      JSON.stringify(labels),
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`Added label '${labelName}' to ${padId(id)}`);
@@ -708,14 +808,16 @@ const commands: Record<string, (args: string[]) => void> = {
   unlabel: (args) => {
     const id = args[0];
     const labelName = args[1];
-    
+
     if (!id || !labelName) {
       console.error("Usage: work unlabel <id> <label>");
       process.exit(1);
     }
 
     const db = getDb();
-    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    const row = db
+      .query("SELECT * FROM work WHERE id = ?")
+      .get(padId(id)) as any;
     if (!row) {
       db.close();
       console.error(`Work item ${id} not found`);
@@ -724,16 +826,19 @@ const commands: Record<string, (args: string[]) => void> = {
 
     const labels: string[] = row.labels ? JSON.parse(row.labels) : [];
     const idx = labels.indexOf(labelName);
-    
+
     if (idx === -1) {
       db.close();
       console.log(`${padId(id)} doesn't have label '${labelName}'`);
       return;
     }
-    
+
     labels.splice(idx, 1);
-    db.run("UPDATE work SET labels = ?, updated = ? WHERE id = ?", 
-      [labels.length ? JSON.stringify(labels) : null, now(), padId(id)]);
+    db.run("UPDATE work SET labels = ?, updated = ? WHERE id = ?", [
+      labels.length ? JSON.stringify(labels) : null,
+      now(),
+      padId(id),
+    ]);
     exportToJsonl(db);
     db.close();
     console.log(`Removed label '${labelName}' from ${padId(id)}`);
@@ -741,22 +846,26 @@ const commands: Record<string, (args: string[]) => void> = {
 
   labels: (args) => {
     const db = getDb();
-    const rows = db.query("SELECT labels FROM work WHERE labels IS NOT NULL").all() as any[];
+    const rows = db
+      .query("SELECT labels FROM work WHERE labels IS NOT NULL")
+      .all() as any[];
     db.close();
-    
+
     const allLabels = new Set<string>();
-    rows.forEach(row => {
+    rows.forEach((row) => {
       const labels: string[] = JSON.parse(row.labels);
-      labels.forEach(l => allLabels.add(l));
+      labels.forEach((l) => allLabels.add(l));
     });
-    
+
     if (allLabels.size === 0) {
       console.log("No labels in use");
       return;
     }
-    
+
     console.log("Labels in use:");
-    Array.from(allLabels).sort().forEach(l => console.log(`  ${l}`));
+    Array.from(allLabels)
+      .sort()
+      .forEach((l) => console.log(`  ${l}`));
   },
 
   help: () => {

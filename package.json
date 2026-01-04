@@ -3,9 +3,17 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "si": "./cli.ts"
+    "work": "./work.ts"
   },
   "scripts": {
-    "cli": "bun run cli.ts"
+    "cli": "bun run work.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "bun run typecheck && bun run lint"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "typescript": "^5.0.0"
   }
 }
