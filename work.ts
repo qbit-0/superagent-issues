@@ -34,7 +34,7 @@ function findIssuesDir(): string | null {
 function getIssuesPath(): string {
   const issuesDir = findIssuesDir();
   if (!issuesDir) {
-    console.error("Error: No .issues directory found. Run 'si init' first.");
+    console.error("Error: No .issues directory found. Run 'work init' first.");
     process.exit(1);
   }
   return join(issuesDir, "issues.jsonl");
@@ -92,7 +92,7 @@ const commands: Record<string, (args: string[]) => void> = {
   add: (args) => {
     const title = args.join(" ");
     if (!title) {
-      console.error("Usage: si add <title>");
+      console.error("Usage: work add <title>");
       process.exit(1);
     }
 
@@ -136,7 +136,7 @@ const commands: Record<string, (args: string[]) => void> = {
   show: (args) => {
     const id = args[0];
     if (!id) {
-      console.error("Usage: si show <id>");
+      console.error("Usage: work show <id>");
       process.exit(1);
     }
 
@@ -163,7 +163,7 @@ const commands: Record<string, (args: string[]) => void> = {
   start: (args) => {
     const id = args[0];
     if (!id) {
-      console.error("Usage: si start <id>");
+      console.error("Usage: work start <id>");
       process.exit(1);
     }
 
@@ -183,7 +183,7 @@ const commands: Record<string, (args: string[]) => void> = {
   close: (args) => {
     const id = args[0];
     if (!id) {
-      console.error("Usage: si close <id> [reason]");
+      console.error("Usage: work close <id> [reason]");
       process.exit(1);
     }
 
@@ -206,7 +206,7 @@ const commands: Record<string, (args: string[]) => void> = {
   reopen: (args) => {
     const id = args[0];
     if (!id) {
-      console.error("Usage: si reopen <id>");
+      console.error("Usage: work reopen <id>");
       process.exit(1);
     }
 
@@ -230,7 +230,7 @@ const commands: Record<string, (args: string[]) => void> = {
     const value = args.slice(2).join(" ");
 
     if (!id || !field || !value) {
-      console.error("Usage: si edit <id> <field> <value>");
+      console.error("Usage: work edit <id> <field> <value>");
       console.error("Fields: title, priority, type, description");
       process.exit(1);
     }
@@ -266,17 +266,17 @@ const commands: Record<string, (args: string[]) => void> = {
   },
 
   help: () => {
-    console.log(`superagent-issues (si) - Minimal issue tracker
+    console.log(`superagent-work - Minimal work tracker
 
 Commands:
   init              Initialize .issues in current directory
-  add <title>       Create a new issue
-  list [--status=X] List issues (default: non-closed)
-  show <id>         Show issue details
-  start <id>        Mark issue as in_progress
-  close <id> [why]  Close an issue
-  reopen <id>       Reopen a closed issue
-  edit <id> <field> <value>  Edit issue field
+  add <title>       Create a new work item
+  list [--status=X] List work items (default: non-closed)
+  show <id>         Show work item details
+  start <id>        Mark work item as in_progress
+  close <id> [why]  Close a work item
+  reopen <id>       Reopen a closed work item
+  edit <id> <field> <value>  Edit work item field
   help              Show this help
 
 Status: open, in_progress, closed
@@ -294,6 +294,6 @@ if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
   commands[cmd](args);
 } else {
   console.error(`Unknown command: ${cmd}`);
-  console.error("Run 'si help' for usage");
+  console.error("Run 'work help' for usage");
   process.exit(1);
 }
