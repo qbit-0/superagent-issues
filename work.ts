@@ -193,20 +193,35 @@ const commands: Record<string, (args: string[]) => void> = {
   list: (args) => {
     const db = getDb();
     const statusFilter = args.find((a) => a.startsWith("--status="))?.split("=")[1];
+    const labelFilter = args.find((a) => a.startsWith("--label="))?.split("=")[1];
     
     let query = "SELECT * FROM work";
+    let conditions: string[] = [];
     let params: string[] = [];
     
     if (statusFilter) {
-      query += " WHERE status = ?";
+      conditions.push("status = ?");
       params.push(statusFilter);
     } else {
-      query += " WHERE status != 'closed'";
+      conditions.push("status != 'closed'");
+    }
+    
+    if (conditions.length) {
+      query += " WHERE " + conditions.join(" AND ");
     }
     query += " ORDER BY priority, CAST(id AS INTEGER)";
     
-    const rows = db.query(query).all(...params);
+    let rows = db.query(query).all(...params);
     db.close();
+    
+    // Filter by label in JS (JSON field)
+    if (labelFilter) {
+      rows = rows.filter((row: any) => {
+        if (!row.labels) return false;
+        const labels: string[] = JSON.parse(row.labels);
+        return labels.includes(labelFilter);
+      });
+    }
     
     if (rows.length === 0) {
       console.log("No work items found");
@@ -651,13 +666,99 @@ const commands: Record<string, (args: string[]) => void> = {
     rows.map(rowToWorkItem).forEach((i) => console.log(formatWork(i)));
   },
 
+  label: (args) => {
+    const id = args[0];
+    const labelName = args[1];
+    
+    if (!id || !labelName) {
+      console.error("Usage: work label <id> <label>");
+      process.exit(1);
+    }
+
+    const db = getDb();
+    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    if (!row) {
+      db.close();
+      console.error(`Work item ${id} not found`);
+      process.exit(1);
+    }
+
+    const labels: string[] = row.labels ? JSON.parse(row.labels) : [];
+    if (labels.includes(labelName)) {
+      db.close();
+      console.log(`${padId(id)} already has label '${labelName}'`);
+      return;
+    }
+    
+    labels.push(labelName);
+    db.run("UPDATE work SET labels = ?, updated = ? WHERE id = ?", 
+      [JSON.stringify(labels), now(), padId(id)]);
+    exportToJsonl(db);
+    db.close();
+    console.log(`Added label '${labelName}' to ${padId(id)}`);
+  },
+
+  unlabel: (args) => {
+    const id = args[0];
+    const labelName = args[1];
+    
+    if (!id || !labelName) {
+      console.error("Usage: work unlabel <id> <label>");
+      process.exit(1);
+    }
+
+    const db = getDb();
+    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    if (!row) {
+      db.close();
+      console.error(`Work item ${id} not found`);
+      process.exit(1);
+    }
+
+    const labels: string[] = row.labels ? JSON.parse(row.labels) : [];
+    const idx = labels.indexOf(labelName);
+    
+    if (idx === -1) {
+      db.close();
+      console.log(`${padId(id)} doesn't have label '${labelName}'`);
+      return;
+    }
+    
+    labels.splice(idx, 1);
+    db.run("UPDATE work SET labels = ?, updated = ? WHERE id = ?", 
+      [labels.length ? JSON.stringify(labels) : null, now(), padId(id)]);
+    exportToJsonl(db);
+    db.close();
+    console.log(`Removed label '${labelName}' from ${padId(id)}`);
+  },
+
+  labels: (args) => {
+    const db = getDb();
+    const rows = db.query("SELECT labels FROM work WHERE labels IS NOT NULL").all() as any[];
+    db.close();
+    
+    const allLabels = new Set<string>();
+    rows.forEach(row => {
+      const labels: string[] = JSON.parse(row.labels);
+      labels.forEach(l => allLabels.add(l));
+    });
+    
+    if (allLabels.size === 0) {
+      console.log("No labels in use");
+      return;
+    }
+    
+    console.log("Labels in use:");
+    Array.from(allLabels).sort().forEach(l => console.log(`  ${l}`));
+  },
+
   help: () => {
     console.log(`superagent-work - Minimal work tracker
 
 Commands:
   init              Initialize .work in current directory
   add <title>       Create a new work item
-  list [--status=X] List work items (default: non-closed)
+  list [--status=X] [--label=X] List work items (default: non-closed)
   show <id>         Show work item details
   start <id>        Mark work item as in_progress
   close <id> [why]  Close a work item
@@ -668,6 +769,9 @@ Commands:
   unblock <id> <blocker-id> Remove blocker from id
   ready             List items ready to work on (no open blockers)
   blocked           List items that are blocked
+  label <id> <label> Add a label to work item
+  unlabel <id> <label> Remove a label from work item
+  labels            List all labels in use
   claim <id> <name> Assign work item to someone
   unclaim <id>      Remove assignment
   mine <name>       List work assigned to someone
