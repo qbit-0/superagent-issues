@@ -1,9 +1,16 @@
 #!/usr/bin/env bun
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join, resolve } from "path";
+import { Database } from "bun:sqlite";
 
 // Types
+interface LogEntry {
+  time: string;
+  agent?: string;
+  text: string;
+}
+
 interface WorkItem {
   id: string;
   title: string;
@@ -16,6 +23,7 @@ interface WorkItem {
   blocked_by?: string[];
   labels?: string[];
   closed_reason?: string;
+  log?: LogEntry[];
 }
 
 // Find .work directory by walking up from cwd
@@ -31,32 +39,71 @@ function findWorkDir(): string | null {
   return null;
 }
 
-function getWorkPath(): string {
+function getWorkDir(): string {
   const workDir = findWorkDir();
   if (!workDir) {
     console.error("Error: No .work directory found. Run 'work init' first.");
     process.exit(1);
   }
-  return join(workDir, "work.jsonl");
+  return workDir;
 }
 
-function readWork(): WorkItem[] {
-  const path = getWorkPath();
-  if (!existsSync(path)) return [];
-  const content = readFileSync(path, "utf-8").trim();
-  if (!content) return [];
-  return content.split("\n").map((line) => JSON.parse(line));
+function getDb(): Database {
+  const workDir = getWorkDir();
+  const dbPath = join(workDir, "work.db");
+  const db = new Database(dbPath);
+  
+  // Initialize schema if needed
+  db.run(`
+    CREATE TABLE IF NOT EXISTS work (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      priority INTEGER NOT NULL DEFAULT 2,
+      type TEXT NOT NULL DEFAULT 'task',
+      created TEXT NOT NULL,
+      updated TEXT NOT NULL,
+      description TEXT,
+      blocked_by TEXT,
+      labels TEXT,
+      closed_reason TEXT,
+      log TEXT
+    )
+  `);
+  
+  return db;
 }
 
-function writeWork(items: WorkItem[]): void {
-  const path = getWorkPath();
+function rowToWorkItem(row: any): WorkItem {
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    priority: row.priority,
+    type: row.type,
+    created: row.created,
+    updated: row.updated,
+    description: row.description || undefined,
+    blocked_by: row.blocked_by ? JSON.parse(row.blocked_by) : undefined,
+    labels: row.labels ? JSON.parse(row.labels) : undefined,
+    closed_reason: row.closed_reason || undefined,
+    log: row.log ? JSON.parse(row.log) : undefined,
+  };
+}
+
+function exportToJsonl(db: Database): void {
+  const workDir = getWorkDir();
+  const jsonlPath = join(workDir, "work.jsonl");
+  
+  const rows = db.query("SELECT * FROM work ORDER BY CAST(id AS INTEGER)").all();
+  const items = rows.map(rowToWorkItem);
   const content = items.map((i) => JSON.stringify(i)).join("\n");
-  writeFileSync(path, content ? content + "\n" : "");
+  writeFileSync(jsonlPath, content ? content + "\n" : "");
 }
 
-function nextId(items: WorkItem[]): string {
-  if (items.length === 0) return "001";
-  const maxId = Math.max(...items.map((i) => parseInt(i.id, 10)));
+function nextId(db: Database): string {
+  const row = db.query("SELECT MAX(CAST(id AS INTEGER)) as maxId FROM work").get() as any;
+  const maxId = row?.maxId || 0;
   return String(maxId + 1).padStart(3, "0");
 }
 
@@ -76,6 +123,10 @@ function formatWork(item: WorkItem, verbose = false): string {
   return line;
 }
 
+function padId(id: string): string {
+  return id.padStart(3, "0");
+}
+
 // Commands
 const commands: Record<string, (args: string[]) => void> = {
   init: () => {
@@ -85,6 +136,28 @@ const commands: Record<string, (args: string[]) => void> = {
       return;
     }
     mkdirSync(workDir, { recursive: true });
+    
+    // Create empty DB
+    const db = new Database(join(workDir, "work.db"));
+    db.run(`
+      CREATE TABLE IF NOT EXISTS work (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        priority INTEGER NOT NULL DEFAULT 2,
+        type TEXT NOT NULL DEFAULT 'task',
+        created TEXT NOT NULL,
+        updated TEXT NOT NULL,
+        description TEXT,
+        blocked_by TEXT,
+        labels TEXT,
+        closed_reason TEXT,
+        log TEXT
+      )
+    `);
+    db.close();
+    
+    // Create empty JSONL
     writeFileSync(join(workDir, "work.jsonl"), "");
     console.log("Initialized .work directory");
   },
@@ -100,41 +173,44 @@ const commands: Record<string, (args: string[]) => void> = {
       process.exit(1);
     }
 
-    const items = readWork();
-    const item: WorkItem = {
-      id: nextId(items),
-      title,
-      status: "open",
-      priority: priorityFlag ? parseInt(priorityFlag) : 2,
-      type: typeFlag || "task",
-      created: now(),
-      updated: now(),
-    };
-    items.push(item);
-    writeWork(items);
-    console.log(`Created ${item.id}: ${item.title}`);
+    const db = getDb();
+    const id = nextId(db);
+    const timestamp = now();
+    
+    db.run(
+      `INSERT INTO work (id, title, status, priority, type, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, title, "open", priorityFlag ? parseInt(priorityFlag) : 2, typeFlag || "task", timestamp, timestamp]
+    );
+    
+    exportToJsonl(db);
+    db.close();
+    console.log(`Created ${id}: ${title}`);
   },
 
   list: (args) => {
-    const items = readWork();
+    const db = getDb();
     const statusFilter = args.find((a) => a.startsWith("--status="))?.split("=")[1];
     
-    let filtered = items;
+    let query = "SELECT * FROM work";
+    let params: string[] = [];
+    
     if (statusFilter) {
-      filtered = items.filter((i) => i.status === statusFilter);
+      query += " WHERE status = ?";
+      params.push(statusFilter);
     } else {
-      // Default: show non-closed
-      filtered = items.filter((i) => i.status !== "closed");
+      query += " WHERE status != 'closed'";
     }
-
-    if (filtered.length === 0) {
+    query += " ORDER BY priority, CAST(id AS INTEGER)";
+    
+    const rows = db.query(query).all(...params);
+    db.close();
+    
+    if (rows.length === 0) {
       console.log("No work items found");
       return;
     }
 
-    // Sort by priority, then by id
-    filtered.sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
-    filtered.forEach((i) => console.log(formatWork(i)));
+    rows.map(rowToWorkItem).forEach((i) => console.log(formatWork(i)));
   },
 
   show: (args) => {
@@ -144,13 +220,16 @@ const commands: Record<string, (args: string[]) => void> = {
       process.exit(1);
     }
 
-    const items = readWork();
-    const item = items.find((i) => i.id === id.padStart(3, "0"));
-    if (!item) {
+    const db = getDb();
+    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    db.close();
+    
+    if (!row) {
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
+    const item = rowToWorkItem(row);
     console.log(`ID:       ${item.id}`);
     console.log(`Title:    ${item.title}`);
     console.log(`Status:   ${item.status}`);
@@ -162,6 +241,14 @@ const commands: Record<string, (args: string[]) => void> = {
     if (item.blocked_by?.length) console.log(`Blocked by: ${item.blocked_by.join(", ")}`);
     if (item.labels?.length) console.log(`Labels: ${item.labels.join(", ")}`);
     if (item.closed_reason) console.log(`Closed: ${item.closed_reason}`);
+    if (item.log?.length) {
+      console.log(`\nLog:`);
+      item.log.forEach((entry) => {
+        const agent = entry.agent ? `[${entry.agent}] ` : "";
+        const time = new Date(entry.time).toLocaleString();
+        console.log(`  ${time} ${agent}${entry.text}`);
+      });
+    }
   },
 
   start: (args) => {
@@ -171,17 +258,18 @@ const commands: Record<string, (args: string[]) => void> = {
       process.exit(1);
     }
 
-    const items = readWork();
-    const item = items.find((i) => i.id === id.padStart(3, "0"));
-    if (!item) {
+    const db = getDb();
+    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    if (!row) {
+      db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    item.status = "in_progress";
-    item.updated = now();
-    writeWork(items);
-    console.log(`Started ${item.id}: ${item.title}`);
+    db.run("UPDATE work SET status = ?, updated = ? WHERE id = ?", ["in_progress", now(), padId(id)]);
+    exportToJsonl(db);
+    db.close();
+    console.log(`Started ${padId(id)}: ${row.title}`);
   },
 
   close: (args) => {
@@ -191,20 +279,20 @@ const commands: Record<string, (args: string[]) => void> = {
       process.exit(1);
     }
 
-    const items = readWork();
-    const item = items.find((i) => i.id === id.padStart(3, "0"));
-    if (!item) {
+    const db = getDb();
+    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    if (!row) {
+      db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    item.status = "closed";
-    item.updated = now();
-    if (args.length > 1) {
-      item.closed_reason = args.slice(1).join(" ");
-    }
-    writeWork(items);
-    console.log(`Closed ${item.id}: ${item.title}`);
+    const reason = args.length > 1 ? args.slice(1).join(" ") : null;
+    db.run("UPDATE work SET status = ?, updated = ?, closed_reason = ? WHERE id = ?", 
+      ["closed", now(), reason, padId(id)]);
+    exportToJsonl(db);
+    db.close();
+    console.log(`Closed ${padId(id)}: ${row.title}`);
   },
 
   reopen: (args) => {
@@ -214,18 +302,56 @@ const commands: Record<string, (args: string[]) => void> = {
       process.exit(1);
     }
 
-    const items = readWork();
-    const item = items.find((i) => i.id === id.padStart(3, "0"));
-    if (!item) {
+    const db = getDb();
+    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    if (!row) {
+      db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    item.status = "open";
-    item.updated = now();
-    delete item.closed_reason;
-    writeWork(items);
-    console.log(`Reopened ${item.id}: ${item.title}`);
+    db.run("UPDATE work SET status = ?, updated = ?, closed_reason = NULL WHERE id = ?", 
+      ["open", now(), padId(id)]);
+    exportToJsonl(db);
+    db.close();
+    console.log(`Reopened ${padId(id)}: ${row.title}`);
+  },
+
+  log: (args) => {
+    const id = args[0];
+    const agentFlag = args.find((a) => a.startsWith("--agent="))?.split("=")[1];
+    const textParts = args.slice(1).filter((a) => !a.startsWith("--"));
+    const message = textParts.join(" ");
+
+    if (!id || !message) {
+      console.error("Usage: work log <id> <message> [--agent=name]");
+      process.exit(1);
+    }
+
+    const db = getDb();
+    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    if (!row) {
+      db.close();
+      console.error(`Work item ${id} not found`);
+      process.exit(1);
+    }
+
+    const entry: LogEntry = {
+      time: now(),
+      text: message,
+    };
+    if (agentFlag) {
+      entry.agent = agentFlag;
+    }
+
+    const existingLog = row.log ? JSON.parse(row.log) : [];
+    existingLog.push(entry);
+    
+    db.run("UPDATE work SET log = ?, updated = ? WHERE id = ?", 
+      [JSON.stringify(existingLog), now(), padId(id)]);
+    exportToJsonl(db);
+    db.close();
+    console.log(`Logged to ${padId(id)}`);
   },
 
   edit: (args) => {
@@ -239,34 +365,80 @@ const commands: Record<string, (args: string[]) => void> = {
       process.exit(1);
     }
 
-    const items = readWork();
-    const item = items.find((i) => i.id === id.padStart(3, "0"));
-    if (!item) {
+    const db = getDb();
+    const row = db.query("SELECT * FROM work WHERE id = ?").get(padId(id)) as any;
+    if (!row) {
+      db.close();
       console.error(`Work item ${id} not found`);
       process.exit(1);
     }
 
-    switch (field) {
-      case "title":
-        item.title = value;
-        break;
-      case "priority":
-        item.priority = parseInt(value, 10);
-        break;
-      case "type":
-        item.type = value as WorkItem["type"];
-        break;
-      case "description":
-        item.description = value;
-        break;
-      default:
-        console.error(`Unknown field: ${field}`);
-        process.exit(1);
+    const validFields = ["title", "priority", "type", "description"];
+    if (!validFields.includes(field)) {
+      db.close();
+      console.error(`Unknown field: ${field}`);
+      process.exit(1);
     }
 
-    item.updated = now();
-    writeWork(items);
-    console.log(`Updated ${item.id}`);
+    const sqlValue = field === "priority" ? parseInt(value, 10) : value;
+    db.run(`UPDATE work SET ${field} = ?, updated = ? WHERE id = ?`, [sqlValue, now(), padId(id)]);
+    exportToJsonl(db);
+    db.close();
+    console.log(`Updated ${padId(id)}`);
+  },
+
+  import: () => {
+    const workDir = getWorkDir();
+    const jsonlPath = join(workDir, "work.jsonl");
+    
+    if (!existsSync(jsonlPath)) {
+      console.error("No work.jsonl file found");
+      process.exit(1);
+    }
+    
+    const content = require("fs").readFileSync(jsonlPath, "utf-8").trim();
+    if (!content) {
+      console.log("No items to import");
+      return;
+    }
+    
+    const items: WorkItem[] = content.split("\n").map((line: string) => JSON.parse(line));
+    const db = getDb();
+    
+    // Clear existing data and insert from JSONL
+    db.run("DELETE FROM work");
+    
+    const stmt = db.prepare(`
+      INSERT INTO work (id, title, status, priority, type, created, updated, description, blocked_by, labels, closed_reason, log)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    for (const item of items) {
+      stmt.run(
+        item.id,
+        item.title,
+        item.status,
+        item.priority,
+        item.type,
+        item.created,
+        item.updated,
+        item.description || null,
+        item.blocked_by ? JSON.stringify(item.blocked_by) : null,
+        item.labels ? JSON.stringify(item.labels) : null,
+        item.closed_reason || null,
+        item.log ? JSON.stringify(item.log) : null
+      );
+    }
+    
+    db.close();
+    console.log(`Imported ${items.length} work items from JSONL`);
+  },
+
+  export: () => {
+    const db = getDb();
+    exportToJsonl(db);
+    db.close();
+    console.log("Exported work items to JSONL");
   },
 
   help: () => {
@@ -281,11 +453,16 @@ Commands:
   close <id> [why]  Close a work item
   reopen <id>       Reopen a closed work item
   edit <id> <field> <value>  Edit work item field
+  log <id> <message>  Add a log entry
+  import            Import from JSONL to DB (after git pull)
+  export            Export DB to JSONL (before git commit)
   help              Show this help
 
 Status: open, in_progress, closed
 Priority: 0 (critical) to 4 (backlog), default 2
-Type: task, bug, feature`);
+Type: task, bug, feature
+
+Storage: SQLite (.work/work.db) with auto-export to JSONL (.work/work.jsonl)`);
   },
 };
 
